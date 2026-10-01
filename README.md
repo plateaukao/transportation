@@ -4,9 +4,9 @@ A small native Android app for Taipei and New Taipei, with a compact colour inte
 
 ## What works
 
-- Offline search across 1,051 Taipei/New Taipei bus route entries, including directions and ordered stops.
-- Favourite routes and each route's selected direction saved in SharedPreferences.
-- Manual live bus arrival updates with an update timestamp, status messages and explicit network-failure handling.
+- Offline search across 1,051 Taipei/New Taipei bus route entries by route, destination or stop name, with matched stops shown under each route.
+- Favourite routes and each route's selected direction saved in SharedPreferences. Long-press a route title to pin a home-screen shortcut with a route-text icon, matching colour prefix and the direction at creation.
+- Manual live bus arrival updates with an update timestamp, status messages and explicit network-failure handling. Stop search loads live estimates for visible matched routes, with each direction listed separately and skipped stops marked; tapping an empty search field lists up to 20 saved recent searches.
 - Offline Taipei MRT station-pair full fare, discount reference and journey-time lookup across 119 station entries; swap origins and destinations.
 - Compact route screens with one-tap switching for two directions, scrolling headers, a sticky update timestamp, and collapsing bottom tabs. No automatic refresh timer.
 
@@ -29,7 +29,7 @@ adb -s DEVICE_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s DEVICE_SERIAL shell am start -n info.plateaukao.transportation/.MainActivity
 ```
 
-`checks/run.sh` uses the JDK alone to check actual compressed route/arrival fixtures, negative ETA states, minute rounding, matrix columns, same-station handling, service error pages and external-entity rejection. It needs no device or Gradle dependencies.
+`checks/run.sh` uses the JDK and Python 3 to check actual compressed route/arrival fixtures, negative ETA states, minute rounding, matrix columns, same-station handling, service error pages and external-entity rejection. It needs no device or Gradle dependencies.
 
 ## Data and follow-up
 
@@ -46,3 +46,12 @@ Next data integration requires the owner's official TDX account/API access. Live
 - `research/samples/`: verified downloads, decoded XML and source SQLite database.
 - `research/extraction.json`: version, source device and APK SHA-256 hashes.
 - [Verification record](research/app-verification.md).
+
+## Signed release build
+
+Release 0.2.0 uses a local signing configuration at `~/.android/transportation-release.properties`. It provides `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; keep this file and its keystore private and backed up for future updates. Signing credentials are outside this repository. Without the local configuration, release builds are unsigned.
+
+```sh
+./gradlew :app:assembleRelease :app:lintRelease
+adb -s DEVICE_SERIAL install -r app/build/outputs/apk/release/app-release.apk
+```

@@ -1,6 +1,10 @@
 package info.plateaukao.transportation;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
+import android.graphics.drawable.Icon;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -18,6 +22,7 @@ public final class MainActivity extends Activity {
     private static final int INK = 0xff17253e, PRIMARY = 0xff3e63e9, MUTED = 0xff64748b, BACKGROUND = 0xfff5f7fc;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService searchArrivalWorker = Executors.newFixedThreadPool(3);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Catalogue catalogue;
     private List<Transit.Station> stations = Collections.emptyList();
@@ -34,7 +39,7 @@ public final class MainActivity extends Activity {
     private ListView stopsList;
     private final Map<String, Button> navigation = new HashMap<>();
     private long arrivalTime;
-    private int restoreRoute = -1;
+    private int restoreRoute = -1, shortcutDirection = -1;
     private String fromId = "019", toId = "018";
 
     @Override public void onCreate(Bundle state) {
@@ -45,6 +50,11 @@ public final class MainActivity extends Activity {
             tab = state.getString("tab", "公車"); query = state.getString("query", "");
             restoreRoute = state.getInt("route", -1); directionIndex = state.getInt("direction", 0);
             fromId = state.getString("from", fromId); toId = state.getString("to", toId);
+        }
+        if (state == null && getIntent().hasExtra("shortcut_route")) {
+            restoreRoute = getIntent().getIntExtra("shortcut_route", -1);
+            shortcutDirection = getIntent().getIntExtra("shortcut_direction", 0);
+            tab = "公車";
         }
         if (!Arrays.asList("公車", "收藏", "捷運").contains(tab)) tab = "公車";
         root = column(); root.setBackgroundColor(BACKGROUND); root.setPadding(dp(20), dp(8), dp(20), 0);
@@ -67,6 +77,15 @@ public final class MainActivity extends Activity {
         TextView brand = text("台北交通", 20, true); brand.setPadding(dp(8), 0, 0, 0); brand.setGravity(Gravity.CENTER_VERTICAL);
         appBar.addView(brand, new LinearLayout.LayoutParams(0, dp(52), 1));
         root.addView(appBar);
+        ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
+        if (shortcuts != null) worker.execute(() -> {
+            List<ShortcutInfo> updated = new ArrayList<>();
+            for (ShortcutInfo shortcut : shortcuts.getPinnedShortcuts()) {
+                if (shortcut.getId().startsWith("bus.")) updated.add(new ShortcutInfo.Builder(this, shortcut.getId())
+                    .setShortLabel(shortcut.getShortLabel()).setIcon(routeShortcutIcon(shortcut.getShortLabel().toString())).build());
+            }
+            if (!updated.isEmpty()) shortcuts.updateShortcuts(updated);
+        });
         content = column(); root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         bottomBar = column(); bottomBar.addView(rule()); root.addView(bottomBar);
         LinearLayout tabs = row(); tabs.setPadding(0, dp(8), 0, dp(8));
@@ -94,6 +113,7 @@ public final class MainActivity extends Activity {
                         }
                     }
                     render();
+                    if (selectedRoute != null) fetchArrivals();
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
@@ -131,25 +151,59 @@ public final class MainActivity extends Activity {
     private void searchScreen() {
         boolean onlyFavourites = "收藏".equals(tab);
         LinearLayout searchBox = row(); searchBox.setGravity(Gravity.CENTER_VERTICAL);
+        searchBox.setId(View.generateViewId());
         searchBox.setBackground(surface(Color.WHITE, 0xffdee5f0, 16));
         ImageView searchIcon = icon(R.drawable.ic_search, 22, MUTED);
         searchIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams searchIconParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         searchIconParams.setMargins(dp(16), 0, dp(12), 0); searchBox.addView(searchIcon, searchIconParams);
-        EditText search = new EditText(this);
+        AutoCompleteTextView search = new AutoCompleteTextView(this) {
+            @Override public boolean enoughToFilter() { return false; }
+        };
+        search.setDropDownAnchor(searchBox.getId()); search.setDropDownVerticalOffset(dp(6));
+        search.setDropDownBackgroundDrawable(new android.graphics.drawable.InsetDrawable(surface(Color.WHITE, 0xffdee5f0, 16), dp(8)));
+        Runnable showHistory = () -> {
+            if (search.length() != 0) return;
+            List<String> history = searchHistory();
+            if (history.isEmpty()) return;
+            search.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_dropdown_item_1line, history) {
+                @Override public View getView(int position, View reuse, android.view.ViewGroup parent) {
+                    LinearLayout item = row(); item.setGravity(Gravity.CENTER_VERTICAL);
+                    item.setPadding(dp(12), dp(10), dp(12), dp(10)); item.setMinimumHeight(dp(64));
+                    item.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0xffeaf0ff), surface(Color.WHITE, Color.TRANSPARENT, 10), null));
+                    ImageView glyph = icon(R.drawable.ic_search, 20, PRIMARY);
+                    glyph.setPadding(dp(10), dp(10), dp(10), dp(10)); glyph.setBackground(surface(0xffedf2ff, Color.TRANSPARENT, 12));
+                    glyph.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                    item.addView(glyph, new LinearLayout.LayoutParams(dp(40), dp(40)));
+                    TextView term = text(getItem(position), 17, true); term.setPadding(dp(12), 0, dp(8), 0);
+                    term.setMaxLines(2); term.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    item.addView(term, new LinearLayout.LayoutParams(0, -2, 1));
+                    TextView arrow = text("↗", 20, false); arrow.setTextColor(MUTED);
+                    arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); item.addView(arrow);
+                    return item;
+                }
+            });
+            search.setDropDownWidth(searchBox.getWidth()); search.showDropDown();
+        };
+        search.setOnClickListener(view -> showHistory.run());
+        search.setOnFocusChangeListener((view, focused) -> { if (focused) search.post(showHistory); });
+        search.setOnItemClickListener((parent, view, position, id) -> rememberSearch(search.getText().toString()));
         search.setTextSize(17); search.setTextColor(INK); search.setSingleLine(true);
         search.setPadding(0, 0, dp(8), 0); search.setBackgroundColor(Color.TRANSPARENT);
-        search.setHint("路線號碼或目的地"); search.setHintTextColor(MUTED); search.setContentDescription("搜尋公車路線");
+        search.setHint("路線號碼、目的地或站名"); search.setHintTextColor(MUTED); search.setContentDescription("搜尋公車路線");
         search.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
         search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchBox.addView(search, new LinearLayout.LayoutParams(0, dp(54), 1));
-        Button clear = quietButton("×", () -> search.setText("")); clear.setContentDescription("清除搜尋");
+        Button clear = quietButton("×", () -> { rememberSearch(query); search.setText(""); }); clear.setContentDescription("清除搜尋");
         searchBox.addView(clear, new LinearLayout.LayoutParams(dp(44), dp(48)));
         content.addView(searchBox);
         ListView list = list(); content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
         TextView empty = caption(onlyFavourites ? "尚無收藏路線" : "找不到符合的路線");
         content.addView(empty); list.setEmptyView(empty);
         List<Catalogue.Route> results = new ArrayList<>();
+        Map<Integer, Map<Integer, Transit.Arrival>> arrivals = new HashMap<>();
+        Map<Integer, String> failures = new HashMap<>();
+        Set<Integer> pending = new HashSet<>();
         ArrayAdapter<Catalogue.Route> adapter = new ArrayAdapter<Catalogue.Route>(this, android.R.layout.simple_list_item_1, results) {
             @Override public View getView(int position, View reuse, android.view.ViewGroup parent) {
                 Catalogue.Route route = getItem(position);
@@ -164,17 +218,52 @@ public final class MainActivity extends Activity {
                 TextView destination = text(route.description.replace(" - ", " → "), 16, true);
                 destination.setMaxLines(2); destination.setEllipsize(android.text.TextUtils.TruncateAt.END); destination.setPadding(0, 0, 0, dp(6));
                 details.addView(destination);
-                details.addView(caption(route.city + (parts.length > 1 ? " · " + parts[1] : "公車")));
+                if (route.matchedStops != null) {
+                    TextView matched = caption(matchedStopText(route, arrivals.get(route.key), failures.get(route.key)));
+                    details.addView(matched);
+                } else if (parts.length > 1) details.addView(caption(parts[1]));
                 card.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
                 TextView arrow = text("›", 26, false); arrow.setTextColor(MUTED); card.addView(arrow);
                 return card;
             }
         };
         list.setAdapter(adapter);
+        Runnable fetchVisible = () -> {
+            int first = Math.max(0, list.getFirstVisiblePosition());
+            int last = Math.min(results.size() - 1, Math.max(first, list.getLastVisiblePosition()));
+            int screen = screenVersion, version = searchVersion;
+            for (int position = first; position <= last; position++) {
+                Catalogue.Route route = results.get(position);
+                if (route.matchedStops == null || arrivals.containsKey(route.key) || failures.containsKey(route.key) || !pending.add(route.key)) continue;
+                handler.postDelayed(() -> {
+                    if (destroyed || screen != screenVersion || version != searchVersion) return;
+                    searchArrivalWorker.execute(() -> {
+                        if (destroyed || screen != screenVersion || version != searchVersion) return;
+                        try {
+                            Map<Integer, Transit.Arrival> fresh = Transit.arrivals(new ByteArrayInputStream(Transit.download("https://busserver.bus.yahoo.com/api/route/" + route.key)));
+                            runOnUiThread(() -> {
+                                if (destroyed || screen != screenVersion || version != searchVersion) return;
+                                pending.remove(route.key); arrivals.put(route.key, fresh); adapter.notifyDataSetChanged();
+                            });
+                        } catch (Exception error) {
+                            runOnUiThread(() -> {
+                                if (destroyed || screen != screenVersion || version != searchVersion) return;
+                                pending.remove(route.key); failures.put(route.key, "更新失敗"); adapter.notifyDataSetChanged();
+                            });
+                        }
+                    });
+                }, 400);
+            }
+        };
+        list.setOnScrollListener(new AbsListView.OnScrollListener() {
+            public void onScrollStateChanged(AbsListView view, int state) {}
+            public void onScroll(AbsListView view, int first, int count, int total) { fetchVisible.run(); }
+        });
         Runnable update = () -> {
             if (destroyed || selectedRoute != null || (!"公車".equals(tab) && !"收藏".equals(tab))) return;
             results.clear(); results.addAll(catalogue.search(query, favourites(), onlyFavourites));
-            adapter.notifyDataSetChanged();
+            arrivals.clear(); failures.clear(); pending.clear();
+            adapter.notifyDataSetChanged(); handler.post(fetchVisible);
         };
         search.setText(query); update.run();
         search.addTextChangedListener(new TextWatcher() {
@@ -192,11 +281,44 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private List<String> searchHistory() {
+        List<String> history = new ArrayList<>(Arrays.asList(preferences.getString("search_history", "").split("\n")));
+        history.removeIf(String::isEmpty); return history;
+    }
+
+    private void rememberSearch(String value) {
+        String term = value.trim().replace('\n', ' ');
+        if (term.isEmpty()) return;
+        List<String> history = searchHistory(); history.remove(term); history.add(0, term);
+        if (history.size() > 20) history = history.subList(0, 20);
+        preferences.edit().putString("search_history", String.join("\n", history)).apply();
+    }
+
+    private String matchedStopText(Catalogue.Route route, Map<Integer, Transit.Arrival> arrivals, String failure) {
+        StringJoiner lines = new StringJoiner("\n");
+        for (Catalogue.MatchedDirection direction : route.matchedDirections) {
+            if (direction.stops.isEmpty()) {
+                lines.add(direction.name + " · 不經匹配站點"); continue;
+            }
+            for (Map.Entry<String, List<Integer>> stop : direction.stops.entrySet()) {
+                Transit.Arrival best = null;
+                if (arrivals != null) for (int id : stop.getValue()) {
+                    Transit.Arrival candidate = arrivals.get(id);
+                    if (candidate != null && (best == null || (candidate.seconds >= 0 && (best.seconds < 0 || candidate.seconds < best.seconds)))) best = candidate;
+                }
+                String eta = failure != null ? failure : arrivals == null ? "更新中…" : best == null ? "暫無資料" : best.label();
+                lines.add(stop.getKey() + " · " + direction.name + " · " + eta);
+            }
+        }
+        return lines.toString();
+    }
+
     private void routeScreen() {
         LinearLayout header = column();
         root.removeView(appBar); header.addView(appBar);
         LinearLayout heading = row(); heading.setGravity(Gravity.CENTER_VERTICAL);
         TextView routeName = text(selectedRoute.name, 30, true);
+        routeName.setOnLongClickListener(view -> { pinRouteShortcut(); return true; });
         heading.addView(routeName, new LinearLayout.LayoutParams(0, -2, 1));
         String key = String.valueOf(selectedRoute.key);
         Button favourite = quietButton(favourites().contains(key) ? "★ 已收藏" : "☆ 收藏", () -> {});
@@ -208,7 +330,11 @@ public final class MainActivity extends Activity {
         heading.addView(favourite, new LinearLayout.LayoutParams(dp(104), dp(48))); header.addView(heading);
         space(header, 18);
         if (directions.isEmpty()) directions = catalogue.directions(selectedRoute.key);
-        directionIndex = Math.max(0, Math.min(preferences.getInt("direction." + key, 0), Math.max(0, directions.size() - 1)));
+        int requestedDirection = shortcutDirection >= 0 ? shortcutDirection : preferences.getInt("direction." + key, 0);
+        directionIndex = Math.max(0, Math.min(requestedDirection, Math.max(0, directions.size() - 1)));
+        if (shortcutDirection >= 0) {
+            preferences.edit().putInt("direction." + key, directionIndex).apply(); shortcutDirection = -1;
+        }
         LinearLayout controls = row(); controls.setGravity(Gravity.CENTER_VERTICAL);
         if (directions.size() <= 2) {
             Button direction = quietButton(directions.isEmpty() ? "暫無方向資料" : directions.get(directionIndex).toString(), () -> {});
@@ -277,6 +403,49 @@ public final class MainActivity extends Activity {
             }
         });
         showStops();
+    }
+
+    private void pinRouteShortcut() {
+        ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
+        if (shortcuts == null || !shortcuts.isRequestPinShortcutSupported()) {
+            Toast.makeText(this, "目前的主畫面不支援新增捷徑", Toast.LENGTH_SHORT).show(); return;
+        }
+        Intent launch = new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            .putExtra("shortcut_route", selectedRoute.key).putExtra("shortcut_direction", directionIndex);
+        ShortcutInfo shortcut = new ShortcutInfo.Builder(this, "bus." + selectedRoute.key + "." + directionIndex)
+            .setShortLabel(selectedRoute.name).setLongLabel(selectedRoute.name)
+            .setIcon(routeShortcutIcon(selectedRoute.name)).setIntent(launch).build();
+        worker.execute(() -> {
+            shortcuts.updateShortcuts(Collections.singletonList(shortcut));
+            runOnUiThread(() -> {
+                if (!destroyed && !shortcuts.requestPinShortcut(shortcut, null)) {
+                    Toast.makeText(this, "無法新增捷徑，請重試", Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
+    private Icon routeShortcutIcon(String name) {
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(288, 288, android.graphics.Bitmap.Config.ARGB_8888);
+        String routeNumber = name.split(" ", 2)[0];
+        int background = PRIMARY;
+        if (routeNumber.startsWith("綠")) background = 0xff07866d;
+        else if (routeNumber.startsWith("棕")) background = 0xff795548;
+        else if (routeNumber.startsWith("紅")) background = 0xffc93645;
+        else if (routeNumber.startsWith("藍")) background = 0xff3157d7;
+        else if (routeNumber.startsWith("橘")) background = 0xffe87818;
+        else if (routeNumber.startsWith("黃")) background = 0xfff2c94c;
+        android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap); canvas.drawColor(background);
+        TextPaint paint = new TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(routeNumber.startsWith("黃") || routeNumber.startsWith("橘") ? INK : Color.WHITE);
+        paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        paint.setTextSize(routeNumber.length() <= 3 ? 80 : 52);
+        StaticLayout label = StaticLayout.Builder.obtain(routeNumber, 0, routeNumber.length(), paint, 184)
+            .setAlignment(Layout.Alignment.ALIGN_CENTER).setIncludePad(false).setMaxLines(3)
+            .setEllipsize(TextUtils.TruncateAt.END).build();
+        canvas.translate(52, (288 - label.getHeight()) / 2f); label.draw(canvas);
+        return Icon.createWithAdaptiveBitmap(bitmap);
     }
 
     private void showStops() {
@@ -411,11 +580,15 @@ public final class MainActivity extends Activity {
         state.putInt("route", selectedRoute == null ? -1 : selectedRoute.key); state.putInt("direction", directionIndex);
         state.putString("from", fromId); state.putString("to", toId);
     }
+    @Override public void onPause() {
+        rememberSearch(query); super.onPause();
+    }
     @Override public void onDestroy() {
-        destroyed = true; handler.removeCallbacksAndMessages(null); worker.shutdownNow();
+        destroyed = true; handler.removeCallbacksAndMessages(null); worker.shutdownNow(); searchArrivalWorker.shutdownNow();
         if (catalogue != null) catalogue.close(); super.onDestroy();
     }
     private void hideKeyboard() {
+        rememberSearch(query);
         ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(), 0);
         root.setFocusableInTouchMode(true); root.requestFocus();
     }
