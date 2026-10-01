@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-01",
+  "device": "20201205023939",
+  "model": "HNR320T",
+  "android_sdk": 29,
+  "package": "nexti.android.bustaipei",
+  "versionName": "1.98.2",
+  "versionCode": 198212316,
+  "apks": {
+    "split_config.xhdpi.apk": {
+      "bytes": 515469,
+      "sha256": "fda369138b9805903f687838753678f55bc4af1fbdaca0a6a2dca94e7169bef4"
+    },
+    "split_config.arm64_v8a.apk": {
+      "bytes": 4477768,
+      "sha256": "1ec6daff7fc6665fdcf3b20e252993ee7e7e3d38b5f49aaf8f3efed92a64aaf0"
+    },
+    "base.apk": {
+      "bytes": 47428940,
+      "sha256": "4a810bbd8b8f603a6a2a9fc5b8bf2f34d6492bb6aa04f8bf1abc27e3f131c876"
+    }
+  }
+}
