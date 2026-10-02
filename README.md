@@ -1,57 +1,54 @@
-# 台北交通 — Transportation
+# 台北交通
 
-A small native Android app for Taipei and New Taipei, with a compact colour interface. Android 10 (API 29) or later. Java, Android platform widgets and networking; no third-party runtime dependencies, ads, analytics or location permission.
+查公車、找站牌，也能查台北捷運票價與旅程時間。支援台北、新北，介面簡潔，沒有廣告，也不需要定位權限。
 
-## What works
+## 下載安裝
 
-- Offline search across 1,051 Taipei/New Taipei bus route entries by route, destination or stop name, with matched stops shown under each route.
-- Favourite routes and each route's selected direction saved in SharedPreferences. Long-press a route title to pin a home-screen shortcut with a route-text icon, matching colour prefix and the direction at creation.
-- Manual live bus arrival updates with an update timestamp, status messages and explicit network-failure handling. Stop search loads live estimates for visible matched routes, with each direction listed separately and skipped stops marked; tapping an empty search field lists up to 20 saved recent searches.
-- Offline Taipei MRT station-pair full fare, discount reference and journey-time lookup across 119 station entries; swap origins and destinations.
-- Compact route screens with one-tap switching for two directions, scrolling headers, a sticky update timestamp, and collapsing bottom tabs. No automatic refresh timer.
+前往 **[最新版本](https://github.com/plateaukao/transportation/releases/latest)**，下載 `transportation-*.apk`，在 Android 手機上開啟安裝。第一次安裝時，系統可能會請你允許該瀏覽器或檔案管理程式「安裝未知應用程式」。
 
-The current private prototype uses the Yahoo data sources verified during research. Its bundled route and MRT snapshot is dated 2026-10-01. MRT journey time is not the next-train countdown. The sources are not an established public API contract; transition to documented official feeds before public distribution. No code or UI assets from the extracted BusTracker APK are part of the new app.
+支援 **Android 10 以上**。更新時直接安裝新版 APK，即可保留收藏、最近搜尋與已選方向。
 
-## Build and check
+## 找路線，或找站牌
 
-Use JDK 17 and Android SDK platform 36. Configure `ANDROID_HOME` or an untracked `local.properties` with `sdk.dir`.
+搜尋列右側的圖示就是搜尋模式：**公車圖示找路線，站牌圖示找站牌**，點一下即可切換。輸入前不顯示整份清單；有輸入時才出現清除按鈕。
 
-```sh
-./gradlew :app:assembleDebug :app:lintDebug
-sh checks/run.sh
-```
+- **找路線**：輸入路線號碼或目的地，點選路線查看各站到站時間。
+- **找站牌**：輸入站名，點選站牌查看所有行經路線，各方向分別顯示到站時間。
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`.
-Package: `info.plateaukao.transportation`. Launcher name: **台北交通**.
+| 搜尋公車路線 | 站牌的行經路線與到站時間 |
+| --- | --- |
+| <img src="docs/screenshots/route-search.png" width="280" alt="路線搜尋：搜尋列右側可切換模式，路線名稱完整顯示，起終點間使用箭頭圖示"> | <img src="docs/screenshots/stop-arrivals.png" width="280" alt="站牌詳細資訊：各行經路線、方向與預估到站時間"> |
 
-```sh
-adb -s DEVICE_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
-adb -s DEVICE_SERIAL shell am start -n info.plateaukao.transportation/.MainActivity
-```
+## 看動態、切方向
 
-`checks/run.sh` uses the JDK and Python 3 to check actual compressed route/arrival fixtures, negative ETA states, minute rounding, matrix columns, same-station handling, service error pages and external-entity rejection. It needs no device or Gradle dependencies. After installing the app and completing sim-use preflight, run `python3 checks/ShortcutCheck.py SERIAL` to verify warm shortcut launches preserve the activity and restore route, direction and stop list.
+開啟路線就會取得預估到站時間。點選方向按鈕切換去返程；想看最新動態時，按 **更新**。每條路線會記住你上次選擇的方向。
 
-## Data and follow-up
+往下捲動時，標題與底部頁籤會收起，讓站點清單有更多空間；更新時間仍保留在上方。未發車、末班駛離等狀態會直接顯示。
 
-`Catalogue.java` reads the bundled city-filtered SQLite snapshot. `Transit.java` independently parses compressed bus XML and the MRT station matrix. `MainActivity.java` owns the native screens, background network requests and local preferences. Screen/request generations prevent delayed network responses from overwriting another screen.
+## 查捷運票價與旅程時間
 
-The route catalogue is a bundled snapshot, not a synchronised database. Stop ordering comes from the bundled catalogue; live arrival requests are independent of optional catalogue updates. Bus estimates refresh only on opening a route or pressing the update button. No historical ETA is treated as current after process restart.
+在 **捷運** 頁籤選擇出發站、到達站，即可查看單程全票、優惠票參考與預估旅程時間。中間的交換按鈕可對調起終點。這是站間旅程時間，**不是下一班列車的到站倒數**。
 
-Next data integration requires the owner's official TDX account/API access. Live MRT countdowns require a separately approved source. [Research findings](research/bustracker-taipei.md) explain the available official services, observed Yahoo formats and their limitations.
+| 公車路線的各站動態 | 捷運票價與旅程時間 |
+| --- | --- |
+| <img src="docs/screenshots/route-arrivals.png" width="280" alt="公車路線詳細資訊：方向切換、更新按鈕及各站預估到站時間"> | <img src="docs/screenshots/metro.png" width="280" alt="捷運查詢：出發站與到達站選擇、交換按鈕、票價與旅程時間"> |
 
-## Research artifacts
+## 收藏與主畫面捷徑
 
-- `apk/`: extracted BusTracker Taipei 1.98.2 base APK and installed configuration splits.
-- `decompiled/`: JADX output for research; excluded from the app and Git staging.
-- `research/samples/`: verified downloads, decoded XML and source SQLite database.
-- `research/extraction.json`: version, source device and APK SHA-256 hashes.
-- [Verification record](research/app-verification.md).
+- 在路線頁面點 **收藏**，之後可從 **收藏** 頁籤快速開啟。
+- **長按路線標題**，建立主畫面捷徑，直接開啟該路線與當時的方向。
+- **長按站牌搜尋結果或站牌頁面的標題**，建立站牌捷徑，直接查看該站所有行經路線的到站時間。
+- 路線捷徑的圖示顯示路線名稱；站牌捷徑顯示站名前兩個字，例如「民生」。完整站名保留在捷徑名稱中，實際顯示長度依主畫面設定而定。
+- 點選空白搜尋列，可再選擇最近搜尋過的內容。
 
-## Signed release build
+## 資料與使用提醒
 
-Release 0.2.0 uses a local signing configuration at `~/.android/transportation-release.properties`. It provides `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; keep this file and its keystore private and backed up for future updates. Signing credentials are outside this repository. Without the local configuration, release builds are unsigned.
+路線、站牌與捷運票價查詢使用內建資料，離線也能搜尋；公車到站動態需要網路。動態會在開啟路線／站牌或按下更新時取得，不會自動倒數更新。預估時間僅供參考，請提前到站候車。
 
-```sh
-./gradlew :app:assembleRelease :app:lintRelease
-adb -s DEVICE_SERIAL install -r app/build/outputs/apk/release/app-release.apk
-```
+同名站牌可能分布在不同道路側或位置，請確認顯示的行車方向。內建資料日期為 **2026-10-01**，實際路線、票價與服務狀態以業者公告為準。資料來源為 Yahoo 交通服務；本 App 為非官方交通查詢工具。
+
+## 回報問題
+
+找不到站牌、動態顯示異常，或有介面建議，歡迎到 **[Issues](https://github.com/plateaukao/transportation/issues)** 回報。請附上路線／站名、Android 版本與問題畫面，方便確認。
+
+想自行編譯或了解實作，請參考 [開發說明](docs/DEVELOPING.md)。

@@ -33,7 +33,8 @@ public final class MainActivity extends Activity {
     private List<Transit.Direction> directions = Collections.emptyList();
     private Map<Integer, Transit.Arrival> estimates = Collections.emptyMap();
     private int directionIndex, screenVersion, searchVersion, requestVersion;
-    private boolean destroyed;
+    private boolean destroyed, stopSearch;
+    private String selectedStop;
     private TextView arrivalStatus;
     private Button refresh;
     private ListView stopsList;
@@ -45,9 +46,11 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         preferences = getSharedPreferences("transportation", MODE_PRIVATE);
+        stopSearch = preferences.getBoolean("stop_search", false);
         fromId = preferences.getString("from", "019"); toId = preferences.getString("to", "018");
         if (state != null) {
             tab = state.getString("tab", "公車"); query = state.getString("query", "");
+            stopSearch = state.getBoolean("stop_search", stopSearch); selectedStop = state.getString("stop");
             restoreRoute = state.getInt("route", -1); directionIndex = state.getInt("direction", 0);
             fromId = state.getString("from", fromId); toId = state.getString("to", toId);
         }
@@ -77,7 +80,7 @@ public final class MainActivity extends Activity {
         bottomBar = column(); bottomBar.addView(rule()); root.addView(bottomBar);
         LinearLayout tabs = row(); tabs.setPadding(0, dp(8), 0, dp(8));
         for (String label : new String[]{"公車", "收藏", "捷運"}) {
-            Button button = button(label, () -> { hideKeyboard(); tab = label; selectedRoute = null; render(); });
+            Button button = button(label, () -> { hideKeyboard(); tab = label; selectedRoute = null; selectedStop = null; render(); });
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(68), 1);
             int symbol = "公車".equals(label) ? R.drawable.ic_bus : "收藏".equals(label) ? R.drawable.ic_star : R.drawable.ic_train;
             android.graphics.drawable.Drawable glyph = getDrawable(symbol); glyph.setBounds(0, 0, dp(22), dp(22));
@@ -112,10 +115,20 @@ public final class MainActivity extends Activity {
     }
 
     private void openShortcut(Intent intent) {
+        if (intent.hasExtra("shortcut_stop")) {
+            String name = intent.getStringExtra("shortcut_stop");
+            if (name == null || name.trim().isEmpty()) return;
+            tab = "公車"; selectedStop = name; query = name; stopSearch = true;
+            preferences.edit().putBoolean("stop_search", true).apply();
+            selectedRoute = null; restoreRoute = -1; shortcutDirection = -1;
+            directions = Collections.emptyList(); estimates = Collections.emptyMap(); arrivalTime = 0;
+            if (catalogue != null) { hideKeyboard(); render(); }
+            return;
+        }
         if (!intent.hasExtra("shortcut_route")) return;
         restoreRoute = intent.getIntExtra("shortcut_route", -1);
         shortcutDirection = Math.max(0, intent.getIntExtra("shortcut_direction", 0));
-        tab = "公車"; selectedRoute = null; directions = Collections.emptyList();
+        tab = "公車"; selectedStop = null; selectedRoute = null; directions = Collections.emptyList();
         estimates = Collections.emptyMap(); arrivalTime = 0; directionIndex = 0;
         if (catalogue == null) return;
         selectedRoute = catalogue.route(restoreRoute);
@@ -130,13 +143,43 @@ public final class MainActivity extends Activity {
             .putExtra("shortcut_route", route).putExtra("shortcut_direction", direction);
     }
 
+    private Intent stopShortcutIntent(String name) {
+        return new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra("shortcut_stop", name);
+    }
+
+    private void pinStopShortcut(String name) {
+        ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
+        if (shortcuts == null || !shortcuts.isRequestPinShortcutSupported()) {
+            Toast.makeText(this, "目前的主畫面不支援新增捷徑", Toast.LENGTH_SHORT).show(); return;
+        }
+        ShortcutInfo shortcut = new ShortcutInfo.Builder(this, "stop." + name)
+            .setShortLabel(name).setLongLabel(name).setIcon(stopShortcutIcon(name))
+            .setIntent(stopShortcutIntent(name)).build();
+        worker.execute(() -> {
+            shortcuts.updateShortcuts(Collections.singletonList(shortcut));
+            runOnUiThread(() -> {
+                if (!destroyed && !shortcuts.requestPinShortcut(shortcut, null)) {
+                    Toast.makeText(this, "無法新增捷徑，請重試", Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
     private void refreshPinnedShortcuts() {
         ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
         if (shortcuts == null) return;
         List<ShortcutInfo> updated = new ArrayList<>();
         for (ShortcutInfo shortcut : shortcuts.getPinnedShortcuts()) {
-            if (!shortcut.getId().startsWith("bus.")) continue;
             Intent previous = shortcut.getIntent();
+            if (shortcut.getId().startsWith("stop.") && previous != null && previous.hasExtra("shortcut_stop")) {
+                String name = previous.getStringExtra("shortcut_stop");
+                if (name != null && !name.trim().isEmpty()) updated.add(new ShortcutInfo.Builder(this, shortcut.getId())
+                    .setShortLabel(name).setLongLabel(name).setIcon(stopShortcutIcon(name)).setIntent(stopShortcutIntent(name)).build());
+                continue;
+            }
+            if (!shortcut.getId().startsWith("bus.")) continue;
             if (previous == null || !previous.hasExtra("shortcut_route")) continue;
             updated.add(new ShortcutInfo.Builder(this, shortcut.getId()).setShortLabel(shortcut.getShortLabel())
                 .setIcon(routeShortcutIcon(shortcut.getShortLabel().toString()))
@@ -162,6 +205,7 @@ public final class MainActivity extends Activity {
         }
         if (catalogue == null) { content.addView(text("正在準備離線路線…", 18, false)); return; }
         if (selectedRoute != null) { routeScreen(); return; }
+        if (selectedStop != null) { stopScreen(); return; }
         switch (tab) {
             case "捷運": metroScreen(); break;
             default: searchScreen();
@@ -172,13 +216,10 @@ public final class MainActivity extends Activity {
 
     private void searchScreen() {
         boolean onlyFavourites = "收藏".equals(tab);
+        boolean stopsMode = stopSearch && !onlyFavourites;
         LinearLayout searchBox = row(); searchBox.setGravity(Gravity.CENTER_VERTICAL);
         searchBox.setId(View.generateViewId());
         searchBox.setBackground(surface(Color.WHITE, 0xffdee5f0, 16));
-        ImageView searchIcon = icon(R.drawable.ic_search, 22, MUTED);
-        searchIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams searchIconParams = new LinearLayout.LayoutParams(dp(22), dp(22));
-        searchIconParams.setMargins(dp(16), 0, dp(12), 0); searchBox.addView(searchIcon, searchIconParams);
         AutoCompleteTextView search = new AutoCompleteTextView(this) {
             @Override public boolean enoughToFilter() { return false; }
         };
@@ -211,94 +252,104 @@ public final class MainActivity extends Activity {
         search.setOnFocusChangeListener((view, focused) -> { if (focused) search.post(showHistory); });
         search.setOnItemClickListener((parent, view, position, id) -> rememberSearch(search.getText().toString()));
         search.setTextSize(17); search.setTextColor(INK); search.setSingleLine(true);
-        search.setPadding(0, 0, dp(8), 0); search.setBackgroundColor(Color.TRANSPARENT);
-        search.setHint("路線號碼、目的地或站名"); search.setHintTextColor(MUTED); search.setContentDescription("搜尋公車路線");
+        search.setPadding(dp(16), 0, dp(8), 0); search.setBackgroundColor(Color.TRANSPARENT);
+        search.setHint(stopsMode ? "搜尋站牌名稱" : "路線號碼或目的地"); search.setHintTextColor(MUTED); search.setContentDescription(stopsMode ? "搜尋站牌" : "搜尋公車路線");
         search.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
         search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchBox.addView(search, new LinearLayout.LayoutParams(0, dp(54), 1));
         Button clear = quietButton("×", () -> { rememberSearch(query); search.setText(""); }); clear.setContentDescription("清除搜尋");
         searchBox.addView(clear, new LinearLayout.LayoutParams(dp(44), dp(48)));
+        if (!onlyFavourites) {
+            ImageButton toggle = new ImageButton(this);
+            toggle.setImageResource(stopsMode ? R.drawable.ic_bus_stop : R.drawable.ic_bus);
+            toggle.setImageTintList(android.content.res.ColorStateList.valueOf(PRIMARY));
+            toggle.setBackgroundResource(android.R.drawable.list_selector_background);
+            toggle.setPadding(dp(12), dp(12), dp(12), dp(12));
+            toggle.setContentDescription(stopsMode ? "站牌搜尋，切換為路線搜尋" : "路線搜尋，切換為站牌搜尋");
+            toggle.setOnClickListener(view -> {
+                boolean editing = search.hasFocus(); hideKeyboard(); stopSearch = !stopSearch;
+                preferences.edit().putBoolean("stop_search", stopSearch).apply(); render();
+                if (editing) {
+                    AutoCompleteTextView field = content.findViewWithTag("bus_search");
+                    field.requestFocus(); field.setSelection(field.length());
+                    field.post(() -> ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(field, InputMethodManager.SHOW_IMPLICIT));
+                }
+            });
+            searchBox.addView(toggle, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        }
+        search.setTag("bus_search");
         content.addView(searchBox);
         ListView list = list(); content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
-        TextView empty = caption(onlyFavourites ? "尚無收藏路線" : "找不到符合的路線");
+        TextView empty = caption(onlyFavourites ? "尚無收藏路線" : stopsMode ? "找不到符合的站牌" : "找不到符合的路線");
         content.addView(empty); list.setEmptyView(empty);
         List<Catalogue.Route> results = new ArrayList<>();
-        Map<Integer, Map<Integer, Transit.Arrival>> arrivals = new HashMap<>();
-        Map<Integer, String> failures = new HashMap<>();
-        Set<Integer> pending = new HashSet<>();
+        List<String> stopResults = new ArrayList<>();
         ArrayAdapter<Catalogue.Route> adapter = new ArrayAdapter<Catalogue.Route>(this, android.R.layout.simple_list_item_1, results) {
             @Override public View getView(int position, View reuse, android.view.ViewGroup parent) {
                 Catalogue.Route route = getItem(position);
-                LinearLayout card = row(); card.setGravity(Gravity.CENTER_VERTICAL); card.setPadding(dp(12), dp(16), dp(12), dp(16)); card.setBackground(surface(Color.WHITE, Color.WHITE, 16));
+                LinearLayout card = row(); card.setGravity(Gravity.CENTER_VERTICAL); card.setPadding(dp(12), dp(10), dp(12), dp(10)); card.setBackground(surface(Color.WHITE, Color.WHITE, 16));
                 String[] parts = route.name.split(" ", 2);
-                TextView number = text(parts[0], parts[0].length() > 5 ? 16 : 25, true);
+                TextView number = text(parts[0], parts[0].length() > 5 ? 16 : 25, true, true);
                 number.setGravity(Gravity.CENTER); number.setPadding(dp(4), dp(6), dp(4), dp(6));
                 number.setMaxLines(2); number.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 number.setBackground(surface(0xffedf2ff, 0xffedf2ff, 12)); number.setTextColor(PRIMARY);
-                card.addView(number, new LinearLayout.LayoutParams(dp(82), dp(66)));
+                number.setMinimumHeight(dp(48));
+                card.addView(number, new LinearLayout.LayoutParams(dp(82), -2));
                 LinearLayout details = column(); details.setPadding(dp(14), 0, dp(4), 0);
-                TextView destination = text(route.description.replace(" - ", " → "), 16, true);
-                destination.setMaxLines(2); destination.setEllipsize(android.text.TextUtils.TruncateAt.END); destination.setPadding(0, 0, 0, dp(6));
-                details.addView(destination);
-                if (route.matchedStops != null) {
-                    TextView matched = caption(matchedStopText(route, arrivals.get(route.key), failures.get(route.key)));
-                    details.addView(matched);
-                } else if (parts.length > 1) details.addView(caption(parts[1]));
+                String[] endpoints = route.description.split(" - ", 2);
+                if (endpoints.length == 2) {
+                    TextView journey = text(endpoints[0] + "  \uFFFC  " + endpoints[1], 16, true, true);
+                    android.graphics.drawable.Drawable arrow = getDrawable(R.drawable.ic_direction);
+                    arrow.setBounds(0, 0, dp(18), dp(18));
+                    SpannableString label = new SpannableString(journey.getText());
+                    int arrowIndex = endpoints[0].length() + 2;
+                    label.setSpan(new android.text.style.ImageSpan(arrow, android.text.style.DynamicDrawableSpan.ALIGN_CENTER),
+                        arrowIndex, arrowIndex + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    journey.setText(label); journey.setContentDescription(endpoints[0] + " 至 " + endpoints[1]);
+                    details.addView(journey);
+                } else details.addView(text(route.description, 16, true, true));
+                if (parts.length > 1) details.addView(caption(parts[1]));
                 card.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
-                TextView arrow = text("›", 26, false); arrow.setTextColor(MUTED); card.addView(arrow);
                 return card;
             }
         };
-        list.setAdapter(adapter);
-        Runnable fetchVisible = () -> {
-            int first = Math.max(0, list.getFirstVisiblePosition());
-            int last = Math.min(results.size() - 1, Math.max(first, list.getLastVisiblePosition()));
-            int screen = screenVersion, version = searchVersion;
-            for (int position = first; position <= last; position++) {
-                Catalogue.Route route = results.get(position);
-                if (route.matchedStops == null || arrivals.containsKey(route.key) || failures.containsKey(route.key) || !pending.add(route.key)) continue;
-                handler.postDelayed(() -> {
-                    if (destroyed || screen != screenVersion || version != searchVersion) return;
-                    searchArrivalWorker.execute(() -> {
-                        if (destroyed || screen != screenVersion || version != searchVersion) return;
-                        try {
-                            Map<Integer, Transit.Arrival> fresh = Transit.arrivals(new ByteArrayInputStream(Transit.download("https://busserver.bus.yahoo.com/api/route/" + route.key)));
-                            runOnUiThread(() -> {
-                                if (destroyed || screen != screenVersion || version != searchVersion) return;
-                                pending.remove(route.key); arrivals.put(route.key, fresh); adapter.notifyDataSetChanged();
-                            });
-                        } catch (Exception error) {
-                            runOnUiThread(() -> {
-                                if (destroyed || screen != screenVersion || version != searchVersion) return;
-                                pending.remove(route.key); failures.put(route.key, "更新失敗"); adapter.notifyDataSetChanged();
-                            });
-                        }
-                    });
-                }, 400);
+        ArrayAdapter<String> stopAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, stopResults) {
+            @Override public View getView(int position, View reuse, android.view.ViewGroup parent) {
+                TextView name = text(getItem(position), 17, false, true);
+                name.setPadding(dp(12), dp(12), dp(12), dp(12)); name.setMinimumHeight(dp(48));
+                return name;
             }
         };
-        list.setOnScrollListener(new AbsListView.OnScrollListener() {
-            public void onScrollStateChanged(AbsListView view, int state) {}
-            public void onScroll(AbsListView view, int first, int count, int total) { fetchVisible.run(); }
+        list.setAdapter(stopsMode ? stopAdapter : adapter);
+        if (stopsMode) list.setOnItemLongClickListener((parent, view, position, id) -> {
+            pinStopShortcut(stopResults.get(position)); return true;
         });
         Runnable update = () -> {
-            if (destroyed || selectedRoute != null || (!"公車".equals(tab) && !"收藏".equals(tab))) return;
-            results.clear(); results.addAll(catalogue.search(query, favourites(), onlyFavourites));
-            arrivals.clear(); failures.clear(); pending.clear();
-            adapter.notifyDataSetChanged(); handler.post(fetchVisible);
+            if (destroyed || selectedRoute != null || selectedStop != null || (!"公車".equals(tab) && !"收藏".equals(tab))) return;
+            boolean hasQuery = !query.trim().isEmpty();
+            empty.setText(!hasQuery && !onlyFavourites ? "" : onlyFavourites ? "尚無收藏路線" : stopsMode ? "找不到符合的站牌" : "找不到符合的路線");
+            if (stopsMode) {
+                stopResults.clear(); if (hasQuery) stopResults.addAll(catalogue.searchStops(query)); stopAdapter.notifyDataSetChanged();
+            } else {
+                results.clear(); if (hasQuery || onlyFavourites) results.addAll(catalogue.search(query, favourites(), onlyFavourites)); adapter.notifyDataSetChanged();
+            }
         };
-        search.setText(query); update.run();
+        search.setText(query); clear.setVisibility(search.length() == 0 ? View.GONE : View.VISIBLE); update.run();
         search.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             public void onTextChanged(CharSequence s, int start, int before, int count) {
+                clear.setVisibility(s.length() == 0 ? View.GONE : View.VISIBLE);
                 query = s.toString(); int version = ++searchVersion;
-                handler.postDelayed(() -> { if (version == searchVersion) update.run(); }, 120);
+                if (query.trim().isEmpty()) update.run();
+                else handler.postDelayed(() -> { if (version == searchVersion) update.run(); }, 120);
             }
             public void afterTextChanged(Editable text) {}
         });
         search.setOnEditorActionListener((v, action, event) -> { hideKeyboard(); update.run(); return true; });
         list.setOnItemClickListener((parent, view, position, id) -> {
-            hideKeyboard(); selectedRoute = results.get(position); directionIndex = 0;
+            hideKeyboard();
+            if (stopsMode) { selectedStop = stopResults.get(position); render(); return; }
+            selectedRoute = results.get(position); directionIndex = 0;
             directions = Collections.emptyList(); estimates = Collections.emptyMap(); arrivalTime = 0; render(); fetchArrivals();
         });
     }
@@ -316,30 +367,87 @@ public final class MainActivity extends Activity {
         preferences.edit().putString("search_history", String.join("\n", history)).apply();
     }
 
-    private String matchedStopText(Catalogue.Route route, Map<Integer, Transit.Arrival> arrivals, String failure) {
-        StringJoiner lines = new StringJoiner("\n");
-        for (Catalogue.MatchedDirection direction : route.matchedDirections) {
-            if (direction.stops.isEmpty()) {
-                lines.add(direction.name + " · 不經匹配站點"); continue;
-            }
-            for (Map.Entry<String, List<Integer>> stop : direction.stops.entrySet()) {
+    private void stopScreen() {
+        List<Catalogue.StopRoute> entries = catalogue.stopRoutes(selectedStop);
+        Map<Integer, Map<Integer, Transit.Arrival>> arrivals = new HashMap<>();
+        Set<Integer> failures = new HashSet<>();
+        LinearLayout heading = row(); heading.setGravity(Gravity.CENTER_VERTICAL);
+        Button back = quietButton("‹", this::navigateBack); back.setContentDescription("返回站牌搜尋");
+        heading.addView(back, new LinearLayout.LayoutParams(dp(44), dp(48)));
+        String stopName = selectedStop;
+        TextView title = text(stopName, 20, true, true);
+        title.setOnLongClickListener(view -> { pinStopShortcut(stopName); return true; });
+        heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); content.addView(heading);
+        LinearLayout controls = row(); controls.setGravity(Gravity.CENTER_VERTICAL);
+        TextView status = caption(""); controls.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+        Button updateButton = quietButton("更新", () -> {});
+        controls.addView(updateButton, new LinearLayout.LayoutParams(dp(64), dp(48))); content.addView(controls);
+        ListView list = list(); list.setDividerHeight(0);
+        content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView empty = caption("找不到行經此站的路線"); content.addView(empty); list.setEmptyView(empty);
+        ArrayAdapter<Catalogue.StopRoute> adapter = new ArrayAdapter<Catalogue.StopRoute>(this, android.R.layout.simple_list_item_1, entries) {
+            @Override public View getView(int position, View reuse, android.view.ViewGroup parent) {
+                Catalogue.StopRoute entry = getItem(position);
+                LinearLayout line = row(); line.setGravity(Gravity.CENTER_VERTICAL); line.setPadding(0, dp(10), 0, dp(10));
+                TextView number = text(entry.route.name.split(" ", 2)[0], 20, true, true); number.setTextColor(PRIMARY);
+                number.setMaxLines(2); line.addView(number, new LinearLayout.LayoutParams(dp(76), -2));
+                TextView direction = text(entry.direction, 15, false); direction.setPadding(dp(8), 0, dp(8), 0);
+                line.addView(direction, new LinearLayout.LayoutParams(0, -2, 1));
+                Map<Integer, Transit.Arrival> routeArrivals = arrivals.get(entry.route.key);
                 Transit.Arrival best = null;
-                if (arrivals != null) for (int id : stop.getValue()) {
-                    Transit.Arrival candidate = arrivals.get(id);
+                if (routeArrivals != null) for (int stopId : entry.stopIds) {
+                    Transit.Arrival candidate = routeArrivals.get(stopId);
                     if (candidate != null && (best == null || (candidate.seconds >= 0 && (best.seconds < 0 || candidate.seconds < best.seconds)))) best = candidate;
                 }
-                String eta = failure != null ? failure : arrivals == null ? "更新中…" : best == null ? "暫無資料" : best.label();
-                lines.add(stop.getKey() + " · " + direction.name + " · " + eta);
+                String label = failures.contains(entry.route.key) ? "更新失敗" : routeArrivals == null ? "更新中…" : best == null ? "暫無資料" : best.label();
+                TextView eta = text(label, 16, true); eta.setGravity(Gravity.END);
+                if (best != null && best.seconds >= 0 && !failures.contains(entry.route.key)) eta.setTextColor(0xff07866d);
+                line.addView(eta, new LinearLayout.LayoutParams(dp(96), -2));
+                return line;
             }
-        }
-        return lines.toString();
+        };
+        list.setAdapter(adapter);
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            Catalogue.StopRoute entry = entries.get(position); selectedRoute = entry.route;
+            directions = catalogue.directions(selectedRoute.key);
+            for (int i = 0; i < directions.size(); i++) for (Transit.Stop stop : directions.get(i).stops) {
+                if (entry.stopIds.contains(stop.id)) { shortcutDirection = i; break; }
+            }
+            estimates = Collections.emptyMap(); arrivalTime = 0; render(); fetchArrivals();
+        });
+        Runnable fetch = () -> {
+            int screen = screenVersion, request = ++requestVersion;
+            Set<Integer> keys = new LinkedHashSet<>(); for (Catalogue.StopRoute entry : entries) keys.add(entry.route.key);
+            if (keys.isEmpty()) return;
+            arrivals.clear(); failures.clear(); adapter.notifyDataSetChanged();
+            updateButton.setEnabled(false); status.setText("更新中…");
+            int[] remaining = { keys.size() };
+            for (int key : keys) searchArrivalWorker.execute(() -> {
+                if (destroyed || screen != screenVersion || request != requestVersion) return;
+                Map<Integer, Transit.Arrival> fresh;
+                try { fresh = Transit.arrivals(new ByteArrayInputStream(Transit.download("https://busserver.bus.yahoo.com/api/route/" + key))); }
+                catch (Exception error) { fresh = null; }
+                Map<Integer, Transit.Arrival> result = fresh;
+                runOnUiThread(() -> {
+                    if (destroyed || screen != screenVersion || request != requestVersion) return;
+                    if (result == null) failures.add(key); else arrivals.put(key, result);
+                    adapter.notifyDataSetChanged();
+                    if (--remaining[0] == 0) {
+                        updateButton.setEnabled(true);
+                        status.setText((failures.isEmpty() ? "更新 " : failures.size() == keys.size() ? "更新失敗 · " : "部分更新失敗 · ") + time(System.currentTimeMillis()));
+                        status.setTextColor(failures.isEmpty() ? MUTED : 0xffb45309);
+                    }
+                });
+            });
+        };
+        updateButton.setOnClickListener(view -> fetch.run()); fetch.run();
     }
 
     private void routeScreen() {
         LinearLayout header = column();
         root.removeView(appBar); header.addView(appBar);
         LinearLayout heading = row(); heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView routeName = text(selectedRoute.name, 30, true);
+        TextView routeName = text(selectedRoute.name, 30, true, true);
         routeName.setOnLongClickListener(view -> { pinRouteShortcut(); return true; });
         heading.addView(routeName, new LinearLayout.LayoutParams(0, -2, 1));
         String key = String.valueOf(selectedRoute.key);
@@ -446,6 +554,19 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private Icon stopShortcutIcon(String name) {
+        String trimmed = name.trim();
+        String label = trimmed.substring(0, trimmed.offsetByCodePoints(0, Math.min(2, trimmed.codePointCount(0, trimmed.length()))));
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(288, 288, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap); canvas.drawColor(PRIMARY);
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.WHITE); paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        paint.setTextSize(76); paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+        android.graphics.Paint.FontMetrics metrics = paint.getFontMetrics();
+        canvas.drawText(label, 144, (288 - metrics.ascent - metrics.descent) / 2, paint);
+        return Icon.createWithAdaptiveBitmap(bitmap);
+    }
+
     private Icon routeShortcutIcon(String name) {
         android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(288, 288, android.graphics.Bitmap.Config.ARGB_8888);
         String routeNumber = name.split(" ", 2)[0];
@@ -480,7 +601,7 @@ public final class MainActivity extends Activity {
                 TextView index = caption(String.format(Locale.TAIWAN, "%02d", position + 1));
                 index.setGravity(Gravity.CENTER); index.setBackground(surface(0xffeaf0ff, 0xffeaf0ff, 20)); index.setTextColor(PRIMARY);
                 line.addView(index, new LinearLayout.LayoutParams(dp(32), dp(32)));
-                TextView name = text(stop.name, 17, true); name.setPadding(dp(12), 0, dp(10), 0); name.setMaxLines(2);
+                TextView name = text(stop.name, 17, true, true); name.setPadding(dp(12), 0, dp(10), 0); name.setMaxLines(2);
                 line.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
                 String label = arrival == null ? "—" : arrival.label();
                 TextView eta = text(label, label.endsWith("分鐘") ? 21 : 16, true);
@@ -591,12 +712,14 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() { navigateBack(); }
     private void navigateBack() {
         if (selectedRoute != null) { selectedRoute = null; estimates = Collections.emptyMap(); arrivalTime = 0; render(); }
+        else if (selectedStop != null) { selectedStop = null; render(); }
         else if (!"公車".equals(tab)) { tab = "公車"; render(); }
         else finish();
     }
     @Override public void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         state.putString("tab", tab); state.putString("query", query);
+        state.putBoolean("stop_search", stopSearch); state.putString("stop", selectedStop);
         state.putInt("route", selectedRoute == null ? -1 : selectedRoute.key); state.putInt("direction", directionIndex);
         state.putString("from", fromId); state.putString("to", toId);
     }
@@ -617,8 +740,31 @@ public final class MainActivity extends Activity {
     private LinearLayout column() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); return layout; }
     private LinearLayout row() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.HORIZONTAL); return layout; }
     private ListView list() { ListView list = new ListView(this); list.setDivider(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); list.setDividerHeight(dp(8)); list.setSelector(android.R.color.transparent); return list; }
-    private TextView text(String value, int size, boolean bold) {
-        TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(INK);
+    private TextView text(String value, int size, boolean bold) { return text(value, size, bold, false); }
+    private TextView text(String value, int size, boolean bold, boolean fitLabel) {
+        TextView view = fitLabel ? new TextView(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                int width = MeasureSpec.getSize(widthSpec) - getCompoundPaddingLeft() - getCompoundPaddingRight();
+                if (MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED && width > 0) {
+                    float scale = getResources().getDisplayMetrics().scaledDensity;
+                    TextPaint paint = new TextPaint(getPaint()); paint.setTextSize(size * scale);
+                    float fitted = Layout.getDesiredWidth(getText(), paint) > width ? size * 0.8f : size;
+                    StaticLayout layout;
+                    do {
+                        paint.setTextSize(fitted * scale);
+                        layout = StaticLayout.Builder.obtain(getText(), 0, getText().length(), paint, width)
+                            .setIncludePad(false).build();
+                        if (layout.getLineCount() <= 2 || fitted <= 10) break;
+                        fitted = Math.max(10, fitted - 1);
+                    } while (true);
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fitted);
+                    // Exceptionally long names may grow beyond two lines rather than lose text.
+                    setMaxLines(layout.getLineCount() > 2 ? Integer.MAX_VALUE : 2);
+                    setEllipsize(null);
+                }
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        } : new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(INK);
         view.setPadding(0, dp(6), 0, dp(6)); view.setIncludeFontPadding(false);
         if (bold) view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); return view;
     }
