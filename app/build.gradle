@@ -26,6 +26,9 @@ android {
     }
     buildTypes {
         release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
             if (!signingProperties.isEmpty()) signingConfig signingConfigs.release
         }
     }
