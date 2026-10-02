@@ -51,11 +51,7 @@ public final class MainActivity extends Activity {
             restoreRoute = state.getInt("route", -1); directionIndex = state.getInt("direction", 0);
             fromId = state.getString("from", fromId); toId = state.getString("to", toId);
         }
-        if (state == null && getIntent().hasExtra("shortcut_route")) {
-            restoreRoute = getIntent().getIntExtra("shortcut_route", -1);
-            shortcutDirection = getIntent().getIntExtra("shortcut_direction", 0);
-            tab = "公車";
-        }
+        if (state == null) openShortcut(getIntent());
         if (!Arrays.asList("公車", "收藏", "捷運").contains(tab)) tab = "公車";
         root = column(); root.setBackgroundColor(BACKGROUND); root.setPadding(dp(20), dp(8), dp(20), 0);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -77,15 +73,6 @@ public final class MainActivity extends Activity {
         TextView brand = text("台北交通", 20, true); brand.setPadding(dp(8), 0, 0, 0); brand.setGravity(Gravity.CENTER_VERTICAL);
         appBar.addView(brand, new LinearLayout.LayoutParams(0, dp(52), 1));
         root.addView(appBar);
-        ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
-        if (shortcuts != null) worker.execute(() -> {
-            List<ShortcutInfo> updated = new ArrayList<>();
-            for (ShortcutInfo shortcut : shortcuts.getPinnedShortcuts()) {
-                if (shortcut.getId().startsWith("bus.")) updated.add(new ShortcutInfo.Builder(this, shortcut.getId())
-                    .setShortLabel(shortcut.getShortLabel()).setIcon(routeShortcutIcon(shortcut.getShortLabel().toString())).build());
-            }
-            if (!updated.isEmpty()) shortcuts.updateShortcuts(updated);
-        });
         content = column(); root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         bottomBar = column(); bottomBar.addView(rule()); root.addView(bottomBar);
         LinearLayout tabs = row(); tabs.setPadding(0, dp(8), 0, dp(8));
@@ -107,11 +94,7 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (destroyed) { loaded.close(); return; }
                     catalogue = loaded; stations = loadedStations;
-                    if (restoreRoute != -1) {
-                        for (Catalogue.Route route : catalogue.search("", favourites(), false)) {
-                            if (route.key == restoreRoute) { selectedRoute = route; break; }
-                        }
-                    }
+                    if (restoreRoute != -1) selectedRoute = catalogue.route(restoreRoute);
                     render();
                     if (selectedRoute != null) fetchArrivals();
                 });
@@ -121,6 +104,45 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+        worker.execute(this::refreshPinnedShortcuts);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent); openShortcut(intent);
+    }
+
+    private void openShortcut(Intent intent) {
+        if (!intent.hasExtra("shortcut_route")) return;
+        restoreRoute = intent.getIntExtra("shortcut_route", -1);
+        shortcutDirection = Math.max(0, intent.getIntExtra("shortcut_direction", 0));
+        tab = "公車"; selectedRoute = null; directions = Collections.emptyList();
+        estimates = Collections.emptyMap(); arrivalTime = 0; directionIndex = 0;
+        if (catalogue == null) return;
+        selectedRoute = catalogue.route(restoreRoute);
+        hideKeyboard(); render();
+        if (selectedRoute != null) fetchArrivals();
+        else Toast.makeText(this, "找不到此路線", Toast.LENGTH_SHORT).show();
+    }
+
+    private Intent shortcutIntent(int route, int direction) {
+        return new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra("shortcut_route", route).putExtra("shortcut_direction", direction);
+    }
+
+    private void refreshPinnedShortcuts() {
+        ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
+        if (shortcuts == null) return;
+        List<ShortcutInfo> updated = new ArrayList<>();
+        for (ShortcutInfo shortcut : shortcuts.getPinnedShortcuts()) {
+            if (!shortcut.getId().startsWith("bus.")) continue;
+            Intent previous = shortcut.getIntent();
+            if (previous == null || !previous.hasExtra("shortcut_route")) continue;
+            updated.add(new ShortcutInfo.Builder(this, shortcut.getId()).setShortLabel(shortcut.getShortLabel())
+                .setIcon(routeShortcutIcon(shortcut.getShortLabel().toString()))
+                .setIntent(shortcutIntent(previous.getIntExtra("shortcut_route", -1), previous.getIntExtra("shortcut_direction", 0))).build());
+        }
+        if (!updated.isEmpty()) shortcuts.updateShortcuts(updated);
     }
 
     private void render() {
@@ -410,9 +432,7 @@ public final class MainActivity extends Activity {
         if (shortcuts == null || !shortcuts.isRequestPinShortcutSupported()) {
             Toast.makeText(this, "目前的主畫面不支援新增捷徑", Toast.LENGTH_SHORT).show(); return;
         }
-        Intent launch = new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW)
-            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            .putExtra("shortcut_route", selectedRoute.key).putExtra("shortcut_direction", directionIndex);
+        Intent launch = shortcutIntent(selectedRoute.key, directionIndex);
         ShortcutInfo shortcut = new ShortcutInfo.Builder(this, "bus." + selectedRoute.key + "." + directionIndex)
             .setShortLabel(selectedRoute.name).setLongLabel(selectedRoute.name)
             .setIcon(routeShortcutIcon(selectedRoute.name)).setIntent(launch).build();

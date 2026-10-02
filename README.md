@@ -29,7 +29,7 @@ adb -s DEVICE_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s DEVICE_SERIAL shell am start -n info.plateaukao.transportation/.MainActivity
 ```
 
-`checks/run.sh` uses the JDK and Python 3 to check actual compressed route/arrival fixtures, negative ETA states, minute rounding, matrix columns, same-station handling, service error pages and external-entity rejection. It needs no device or Gradle dependencies.
+`checks/run.sh` uses the JDK and Python 3 to check actual compressed route/arrival fixtures, negative ETA states, minute rounding, matrix columns, same-station handling, service error pages and external-entity rejection. It needs no device or Gradle dependencies. After installing the app and completing sim-use preflight, run `python3 checks/ShortcutCheck.py SERIAL` to verify warm shortcut launches preserve the activity and restore route, direction and stop list.
 
 ## Data and follow-up
 

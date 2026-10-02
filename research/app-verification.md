@@ -43,3 +43,11 @@ Matched stop IDs are grouped by route path before ETA lookup. Both directions ar
 ## Palma 2 Pro release installation
 
 Signed release 0.2.0 (version code 2) passed assembleRelease, lintRelease and both parser/search checks. APK verification confirmed its release certificate and APK Signature Scheme v2 signature. The non-debuggable APK was installed on the connected Android 15 Palma 2 Pro. sim-use preflight passed; the app loaded its route catalogue, opened 0南 and fetched a current update timestamp and last-service-departed statuses from the live endpoint.
+
+## Shortcut warm-launch fix (0.2.1)
+
+The old shortcut intent used CLEAR_TASK, recreating the activity when the app was already open. An emulator launcher test reproduced a transient view containing only the bottom tabs. The fix uses NEW_TASK, CLEAR_TOP and SINGLE_TOP, handles route and direction in onNewIntent, and updates existing pinned shortcut intents. Catalogue loading now precedes pinned-shortcut maintenance.
+
+Release 0.2.1 (version code 3) passed assembleRelease and lintRelease; parser and catalogue checks passed. The signed release was installed successfully on Palma 2 Pro, and the user subsequently reported that the shortcut appeared to work. The device disconnected before final automated verification there.
+
+On emulator-5556, checks/ShortcutCheck.py passed for both directions of 綠7 and switching to 0南, asserting the activity token remains unchanged. Clicking the existing 綠7 home-screen shortcut also reused activity 193063089 and restored 往黎明清境 with live arrivals (17 and 18 minutes at the first two stops). After intentionally force-stopping the app, the same shortcut showed the catalogue loading message, then restored the same route, direction and live arrivals.

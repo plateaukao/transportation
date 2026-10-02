@@ -34,6 +34,11 @@ final class Catalogue implements AutoCloseable {
         }
         db = SQLiteDatabase.openDatabase(file.getPath(), null, SQLiteDatabase.OPEN_READONLY);
     }
+    Route route(int key) {
+        try (Cursor cursor = db.rawQuery("SELECT route_key,route_name,description FROM routes WHERE route_key=?", new String[]{String.valueOf(key)})) {
+            return cursor.moveToFirst() ? new Route(cursor.getInt(0), cursor.getString(1), cursor.getString(2), null) : null;
+        }
+    }
     List<Route> search(String query, Set<String> favourites, boolean onlyFavourites) {
         String escaped = query.trim().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
         List<Route> result = new ArrayList<>();
